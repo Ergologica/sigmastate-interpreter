@@ -98,36 +98,35 @@ class SigmaTyper(val builder: SigmaBuilder,
       val newItems = items.map(assignType(env, _))
       assignConcreteCollection(c, newItems)
 
+    case i @ Ident("None", _) if isBareNone(i) =>
+      // Bare `None` is a v6.0 feature, gated alongside SGlobalMethods.noneMethod
+      // in SGlobal.getMethods. Infer the element type from the surrounding
+      // context (either a `val` ascription or the sibling branch of an `if`)
+      // and emit a MethodCall on noneMethod.
+      expected match {
+        case Some(SOption(elemTpe)) =>
+          processGlobalMethod(
+            i.sourceContext,
+            SGlobalMethods.noneMethod,
+            IndexedSeq.empty,
+            Map(STypeVar("T") -> elemTpe))
+        case _ =>
+          error(
+            "Cannot infer the type of `None`. Add a type ascription " +
+            "(e.g. `val x: Option[Int] = None`) or use `Global.none[T]()`.",
+            i.sourceContext)
+      }
+
     case i @ Ident(n, _) =>
-      if (isBareNone(i)) {
-        // Bare `None` is a v6.0 feature, gated alongside SGlobalMethods.noneMethod
-        // in SGlobal.getMethods. Infer the element type from the surrounding
-        // context (either a `val` ascription or the sibling branch of an `if`)
-        // and emit a MethodCall on noneMethod.
-        expected match {
-          case Some(SOption(elemTpe)) =>
-            processGlobalMethod(
-              i.sourceContext,
-              SGlobalMethods.noneMethod,
-              IndexedSeq.empty,
-              Map(STypeVar("T") -> elemTpe))
-          case _ =>
-            error(
-              "Cannot infer the type of `None`. Add a type ascription " +
-              "(e.g. `val x: Option[Int] = None`) or use `Global.none[T]()`.",
-              i.sourceContext)
-        }
-      } else {
-        env.get(n) match {
-          case Some(t) => mkIdent(n, t)
-          case None =>
-            SGlobalMethods.method(n) match {
-              case Some(method) if method.stype.tDom.length == 1 => // this is like  `groupGenerator` without parentheses
-                processGlobalMethod(i.sourceContext, method, IndexedSeq())
-              case _ =>
-                error(s"Cannot assign type for variable '$n' because it is not found in env $env", bound.sourceContext)
-            }
-        }
+      env.get(n) match {
+        case Some(t) => mkIdent(n, t)
+        case None =>
+          SGlobalMethods.method(n) match {
+            case Some(method) if method.stype.tDom.length == 1 => // this is like  `groupGenerator` without parentheses
+              processGlobalMethod(i.sourceContext, method, IndexedSeq())
+            case _ =>
+              error(s"Cannot assign type for variable '$n' because it is not found in env $env", bound.sourceContext)
+          }
       }
 
     case sel @ Select(obj, n, None) =>
