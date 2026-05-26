@@ -36,16 +36,24 @@ class SigmaTyper(val builder: SigmaBuilder,
       predefFuncs ++ typeEnv
   }
 
-  /** True when `v` is a bare `None` literal whose element type the typer cannot
-    * resolve on its own — used by the `If` case to pick which branch to type first.
-    * Gated on ErgoTree v6+: pre-V6 the bare-`None` case fails fast on its own,
-    * and reordering would only move the diagnostic away from the `None` token.
+  /** Extractor for a bare `None` literal whose element type the typer cannot
+    * resolve on its own. Active only on ErgoTree v6+; pre-V6 the extractor
+    * never matches, so callers fall through to the standard identifier path.
+    * Single chokepoint for both the AST shape and the version gate — change
+    * either and every call site (case match and `isBareNone`) follows.
     */
-  private def isBareNone(v: SValue): Boolean =
-    VersionContext.current.isV3OrLaterErgoTreeVersion && (v match {
-      case Ident("None", _) => true
-      case _ => false
-    })
+  private object BareNone {
+    def unapply(v: SValue): Option[Ident] =
+      if (VersionContext.current.isV3OrLaterErgoTreeVersion) v match {
+        case i @ Ident("None", _) => Some(i)
+        case _ => None
+      } else None
+  }
+
+  /** Boolean adapter for [[BareNone]] — used by the `If` case to pick which
+    * branch to type first, where a pattern match is awkward.
+    */
+  private def isBareNone(v: SValue): Boolean = BareNone.unapply(v).isDefined
 
   private def processGlobalMethod(srcCtx: Nullable[SourceContext],
                                   method: SMethod,
@@ -98,7 +106,7 @@ class SigmaTyper(val builder: SigmaBuilder,
       val newItems = items.map(assignType(env, _))
       assignConcreteCollection(c, newItems)
 
-    case i @ Ident("None", _) if isBareNone(i) =>
+    case BareNone(i) =>
       // Bare `None` is a v6.0 feature, gated alongside SGlobalMethods.noneMethod
       // in SGlobal.getMethods. Infer the element type from the surrounding
       // context (either a `val` ascription or the sibling branch of an `if`)
