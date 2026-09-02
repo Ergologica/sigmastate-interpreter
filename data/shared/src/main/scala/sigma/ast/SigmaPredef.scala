@@ -2,7 +2,7 @@ package sigma.ast
 
 import org.ergoplatform.ErgoAddressEncoder.NetworkPrefix
 import org.ergoplatform.{ErgoAddressEncoder, P2PKAddress}
-import org.ergoplatform.ErgoBox.RegisterId
+import org.ergoplatform.ErgoBox.{R4, R5, R6, R7, R8, R9, RegisterId}
 import scorex.util.encode.{Base16, Base58, Base64}
 import sigma.data._
 import sigma.{Colls}
@@ -529,11 +529,19 @@ object SigmaPredef {
         Seq(ArgInfo("id", "identifier of the register")))
     )
 
+    /** Element type of the `tokens` collection of a box: (tokenId, amount). */
+    private val STokenElemType: SType = org.ergoplatform.ErgoBox.STokenType
+
+    /** Builds `box.tokens` as a typed collection of (Coll[Byte], Long) tuples. */
+    private def boxTokens(box: Value[SBox.type]): Value[SCollection[STuple]] =
+      mkMethodCall(box, SBoxMethods.tokensMethod, IndexedSeq.empty, Map.empty).asCollection[STuple]
+
     /** Checks that two boxes have equal monetary value and equal guarding script. */
     val VerifySameForBasicRequiredRegistersFunc = PredefinedFunc("verifySameForBasicRequiredRegisters",
       Lambda(Array("inBox" -> SBox, "outBox" -> SBox), SBoolean, None),
       PredefFuncInfo(
-        { case (_, Seq(inBox: Value[SBox.type]@unchecked, outBox: Value[SBox.type]@unchecked)) =>
+        { case (_, Seq(inBox: Value[SBox.type]@unchecked, outBox: Value[SBox.type]@unchecked))
+            if inBox.tpe == SBox && outBox.tpe == SBox =>
           mkBinAnd(
             mkEQ(mkExtractAmount(inBox), mkExtractAmount(outBox)),
             mkEQ(mkExtractScriptBytes(inBox), mkExtractScriptBytes(outBox))
@@ -550,15 +558,14 @@ object SigmaPredef {
     val VerifySameForRequiredRegistersFunc = PredefinedFunc("verifySameForRequiredRegisters",
       Lambda(Array("inBox" -> SBox, "outBox" -> SBox), SBoolean, None),
       PredefFuncInfo(
-        { case (_, Seq(inBox: Value[SBox.type]@unchecked, outBox: Value[SBox.type]@unchecked)) =>
-          val tokensIn = mkMethodCall(inBox, SBoxMethods.tokensMethod, IndexedSeq.empty, Map.empty)
-          val tokensOut = mkMethodCall(outBox, SBoxMethods.tokensMethod, IndexedSeq.empty, Map.empty)
+        { case (_, Seq(inBox: Value[SBox.type]@unchecked, outBox: Value[SBox.type]@unchecked))
+            if inBox.tpe == SBox && outBox.tpe == SBox =>
           mkBinAnd(
             mkBinAnd(
               mkEQ(mkExtractAmount(inBox), mkExtractAmount(outBox)),
               mkEQ(mkExtractScriptBytes(inBox), mkExtractScriptBytes(outBox))
             ),
-            mkEQ(tokensIn, tokensOut)
+            mkEQ(boxTokens(inBox), boxTokens(outBox))
           )
         }),
       OperationInfo(MethodCall,
@@ -573,18 +580,14 @@ object SigmaPredef {
     val VerifyUsedAdditionalRegistersFunc = PredefinedFunc("verifyUsedAdditionalRegisters",
       Lambda(Array("box" -> SBox, "used" -> SInt), SBoolean, None),
       PredefFuncInfo(
-        { case (_, Seq(box: Value[SBox.type]@unchecked, used: Value[SInt.type]@unchecked)) =>
+        { case (_, Seq(box: Value[SBox.type]@unchecked, used: Value[SInt.type]@unchecked))
+            if box.tpe == SBox && used.tpe == SInt =>
           def regIsEmpty(reg: RegisterId): BoolValue =
             mkLogicalNot(mkOptionIsDefined(
               mkExtractRegisterAs(box, reg, SOption(SAny)).asValue[SOption[SAny.type]]))
           // (used >= n || box.R{n+3}[Any].isEmpty) for n = 1..6 (registers R4..R9)
           val clauses: Seq[BoolValue] = Seq[(Int, RegisterId)](
-            1 -> org.ergoplatform.ErgoBox.R4,
-            2 -> org.ergoplatform.ErgoBox.R5,
-            3 -> org.ergoplatform.ErgoBox.R6,
-            4 -> org.ergoplatform.ErgoBox.R7,
-            5 -> org.ergoplatform.ErgoBox.R8,
-            6 -> org.ergoplatform.ErgoBox.R9
+            1 -> R4, 2 -> R5, 3 -> R6, 4 -> R7, 5 -> R8, 6 -> R9
           ).map { case (n, reg) => mkBinOr(mkGE(used, IntConstant(n)), regIsEmpty(reg)) }
           clauses.reduce[BoolValue](mkBinAnd)
         }),
@@ -592,27 +595,21 @@ object SigmaPredef {
         """Returns \lst{true} if \lst{box} uses only the first \lst{used} non-mandatory registers,
           | i.e. all registers with index greater than \lst{used} (counting R4 as 1, ..., R9 as 6)
           | are empty.
-          | NOTE: when a register beyond the first \lst{used} ones is defined, the emptiness check
-          | \lst{R{i}[Any].isEmpty} fails with an exception (instead of returning \lst{false}),
-          | so the script evaluation fails, which is the desired behavior when the function is
-          | used as a guarding predicate of a box.
+          | NOTE: when a register beyond the first \lst{used} ones is defined, checking that the
+          | register is empty (\lst{isEmpty} of the register read as \lst{Option[Any]}) fails with
+          | an exception instead of returning \lst{false}, so the script evaluation fails, which is
+          | the desired behavior when the function is used as a guarding predicate of a box.
         """.stripMargin,
         Seq(ArgInfo("box", "the box to check"),
             ArgInfo("used", "number of additional registers (R4..R9) allowed to be used")))
     )
 
-    /** Element type of the `tokens` collection of a box: (tokenId, amount). */
-    private val STokenElemType: SType = org.ergoplatform.ErgoBox.STokenType
-
-    /** Builds `box.tokens` as a typed collection of (Coll[Byte], Long) tuples. */
-    private def boxTokens(box: Value[SBox.type]): Value[SCollection[STuple]] =
-      mkMethodCall(box, SBoxMethods.tokensMethod, IndexedSeq.empty, Map.empty).asCollection[STuple]
-
     /** Checks that a box contains at least one unit of the given token. */
     val VerifyBoxHasMarkerTokenFunc = PredefinedFunc("verifyBoxHasMarkerToken",
       Lambda(Array("box" -> SBox, "token" -> SByteArray), SBoolean, None),
       PredefFuncInfo(
-        { case (_, Seq(box: Value[SBox.type]@unchecked, token: Value[SByteArray]@unchecked)) =>
+        { case (_, Seq(box: Value[SBox.type]@unchecked, token: Value[SByteArray]@unchecked))
+            if box.tpe == SBox && token.tpe == SByteArray =>
           val t = Ident("$t", STokenElemType).asValue[STuple]
           // t._1 == token && t._2 >= 1L
           val body = mkBinAnd(
@@ -631,7 +628,8 @@ object SigmaPredef {
     val VerifyBoxHasNoMarkerTokenFunc = PredefinedFunc("verifyBoxHasNoMarkerToken",
       Lambda(Array("box" -> SBox, "token" -> SByteArray), SBoolean, None),
       PredefFuncInfo(
-        { case (_, Seq(box: Value[SBox.type]@unchecked, token: Value[SByteArray]@unchecked)) =>
+        { case (_, Seq(box: Value[SBox.type]@unchecked, token: Value[SByteArray]@unchecked))
+            if box.tpe == SBox && token.tpe == SByteArray =>
           val t = Ident("$t", STokenElemType).asValue[STuple]
           // t._1 != token
           val body = mkNEQ(mkSelectField(t, 1.toByte).asValue[SByteArray], token)
@@ -648,7 +646,8 @@ object SigmaPredef {
       Lambda(Array("inBox" -> SBox, "outBox" -> SBox, "token" -> SByteArray, "amount" -> SLong), SBoolean, None),
       PredefFuncInfo(
         { case (_, Seq(inBox: Value[SBox.type]@unchecked, outBox: Value[SBox.type]@unchecked,
-                       token: Value[SByteArray]@unchecked, amount: Value[SLong.type]@unchecked)) =>
+                       token: Value[SByteArray]@unchecked, amount: Value[SLong.type]@unchecked))
+            if inBox.tpe == SBox && outBox.tpe == SBox && token.tpe == SByteArray && amount.tpe == SLong =>
           val it = Ident("$it", STokenElemType).asValue[STuple]
           val itId = mkSelectField(it, 1.toByte).asValue[SByteArray]
           val itAmount = mkSelectField(it, 2.toByte).asValue[SLong.type]
@@ -670,18 +669,19 @@ object SigmaPredef {
         """Returns \lst{true} if every token of \lst{inBox} is preserved in \lst{outBox}, except for
           | the token with id \lst{token} whose amount in \lst{outBox} must be exactly \lst{amount} less
           | than in \lst{inBox}.
+          | NOTE: the check is a \lst{forall} over the tokens of \lst{inBox}, hence it is vacuously
+          | \lst{true} when \lst{inBox} does not hold \lst{token} at all (nothing is spent).
+          | NOTE: spending the token in full (down to zero, i.e. \lst{token} absent in \lst{outBox})
+          | returns \lst{false}: the function requires \lst{outBox} to still hold the token.
+          | NOTE: the amount comparison uses checked arithmetic (\lst{outAmount + amount}), so if the
+          | sum overflows \lst{Long} the evaluation fails with an exception instead of returning
+          | \lst{false}.
         """.stripMargin,
         Seq(ArgInfo("inBox", "the input box"), ArgInfo("outBox", "the output box"),
             ArgInfo("token", "the token id being spent"), ArgInfo("amount", "the spent amount")))
     )
 
     val globalFuncs: Map[String, PredefinedFunc] = Seq(
-      VerifySameForBasicRequiredRegistersFunc,
-      VerifySameForRequiredRegistersFunc,
-      VerifyUsedAdditionalRegistersFunc,
-      VerifyBoxHasMarkerTokenFunc,
-      VerifyBoxHasNoMarkerTokenFunc,
-      VerifySpentTokenFunc,
       AllOfFunc,
       AnyOfFunc,
       XorOfFunc,
@@ -714,7 +714,13 @@ object SigmaPredef {
       SerializeFunc,
       DeserializeToFunc,
       GetVarFromInputFunc,
-      FromBigEndianBytesFunc
+      FromBigEndianBytesFunc,
+      VerifySameForBasicRequiredRegistersFunc,
+      VerifySameForRequiredRegistersFunc,
+      VerifyUsedAdditionalRegistersFunc,
+      VerifyBoxHasMarkerTokenFunc,
+      VerifyBoxHasNoMarkerTokenFunc,
+      VerifySpentTokenFunc
     ).map(f => f.name -> f).toMap
 
     def comparisonOp(symbolName: String, opDesc: ValueCompanion, desc: String, args: Seq[ArgInfo]) = {
