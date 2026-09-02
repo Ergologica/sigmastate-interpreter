@@ -7,6 +7,7 @@ import sigma.Colls
 import sigma.ast._
 import sigma.ast.syntax._
 import sigma.data.{AvlTreeData, Digest32Coll}
+import sigma.exceptions.TyperException
 import sigma.interpreter.{ContextExtension, ProverResult}
 import sigmastate.CompilerCrossVersionProps
 import sigmastate.helpers.TestingHelpers._
@@ -134,9 +135,10 @@ class UtilFunctionsSpecification extends CompilerTestingCommons with CompilerCro
   }
 
   property("verifyUsedAdditionalRegisters - register beyond the allowed ones") {
-    // NOTE: when a register beyond the first `used` ones is defined, the emptiness
-    // check `R{i}[Any].isEmpty` throws (rather than returning false), so the spending
-    // attempt fails, which is the desired guarding behavior.
+    // NOTE: when a register beyond the first `used` ones is defined, checking that the
+    // register is empty (`isEmpty` of the register read as `Option[Any]`) throws rather
+    // than returning false, so the spending attempt fails, which is the desired
+    // guarding behavior.
     testEval("sigmaProp(verifyUsedAdditionalRegisters(SELF, 1))",
       selfRegisters = Map(R4 -> IntConstant(7), R5 -> LongConstant(1L)),
       expectSuccess = false)
@@ -200,5 +202,54 @@ class UtilFunctionsSpecification extends CompilerTestingCommons with CompilerCro
     testEval(s"""sigmaProp(verifySpentToken(SELF, OUTPUTS(0), fromBase16("${tokenHex(1)}"), 100L) == false)""",
       selfTokens = Seq(token1 -> 100L),
       outTokens = ArraySeq.empty)
+  }
+
+  property("verifySpentToken - inBox without the token is vacuously true") {
+    // the check is a `forall` over the tokens of `inBox`: when `inBox` does not hold
+    // `token` at all there is nothing to spend and the function returns true (pinned
+    // here so that the semantics is asserted rather than implicit)
+    testEval(s"""sigmaProp(verifySpentToken(SELF, OUTPUTS(0), fromBase16("${tokenHex(1)}"), 40L))""",
+      selfTokens = Seq(token2 -> 7L),
+      outTokens = Seq(token2 -> 7L))
+  }
+
+  property("verifySpentToken - inBox without any token is vacuously true") {
+    testEval(s"""sigmaProp(verifySpentToken(SELF, OUTPUTS(0), fromBase16("${tokenHex(1)}"), 40L))""")
+  }
+
+  // name reservation
+
+  private val utilFunctionNames = Seq(
+    "verifySameForBasicRequiredRegisters", "verifySameForRequiredRegisters",
+    "verifyUsedAdditionalRegisters", "verifyBoxHasMarkerToken",
+    "verifyBoxHasNoMarkerToken", "verifySpentToken")
+
+  property("util function names cannot be redefined by user scripts (same signature)") {
+    // the typer seeds its environment with the predefined function names, so a
+    // user-defined function with the same name is rejected before any expansion can
+    // silently replace it
+    val script =
+      s"""{
+        |  def verifyBoxHasMarkerToken(box: Box, token: Coll[Byte]): Boolean = false
+        |  sigmaProp(verifyBoxHasMarkerToken(SELF, fromBase16("${tokenHex(1)}")))
+        |}""".stripMargin
+    val e = the[TyperException] thrownBy compile(emptyEnv, script)
+    e.getMessage should include("already defined")
+  }
+
+  property("util function names cannot be redefined by user scripts (any signature)") {
+    utilFunctionNames.foreach { name =>
+      val script = s"{ def $name(x: Int): Int = x; sigmaProp($name(1) == 1) }"
+      val e = the[TyperException] thrownBy compile(emptyEnv, script)
+      e.getMessage should include(s"Variable $name already defined")
+    }
+  }
+
+  property("util function names cannot be rebound by val in user scripts") {
+    utilFunctionNames.foreach { name =>
+      val script = s"{ val $name = 1; sigmaProp($name == 1) }"
+      val e = the[TyperException] thrownBy compile(emptyEnv, script)
+      e.getMessage should include(s"Variable $name already defined")
+    }
   }
 }
